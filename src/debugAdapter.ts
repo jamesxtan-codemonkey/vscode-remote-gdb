@@ -38,6 +38,11 @@ export class RemoteGDBDebugSession extends DebugSession {
     private currentThreadId = 1;
     private outputBuffer = '';
     private isRunning = false;
+    private isInitialized = false;
+    private gdbReady = false;
+    private pendingBreakpoints: Map<string, DebugProtocol.SourceBreakpoint[]> = new Map();
+    private pendingCommands: Map<number, { resolve: (record: MIRecord) => void; reject: (error: Error) => void }> = new Map();
+    private pendingStackTrace: Promise<MIRecord> | null = null;
 
     constructor() {
         super();
@@ -64,13 +69,41 @@ export class RemoteGDBDebugSession extends DebugSession {
     }
 
     /**
+     * Override dispatchRequest to log all incoming requests
+     */
+    protected dispatchRequest(request: DebugProtocol.Request): void {
+        logger.info(`>>> Received request: ${request.command}`, {
+            command: request.command,
+            seq: request.seq
+        });
+
+        // Special handling for setBreakpoints to debug why it's not working
+        if (request.command === 'setBreakpoints') {
+            logger.info('!!! setBreakpoints request detected in dispatchRequest, manually handling');
+            const args = request.arguments as DebugProtocol.SetBreakpointsArguments;
+            const response: DebugProtocol.SetBreakpointsResponse = {
+                request_seq: request.seq,
+                seq: 0,
+                type: 'response',
+                command: request.command,
+                success: true,
+                body: { breakpoints: [] }
+            };
+            this.setBreakpointsRequest(response, args);
+            return;
+        }
+
+        super.dispatchRequest(request);
+    }
+
+    /**
      * Initialize request
      */
     protected initializeRequest(
         response: DebugProtocol.InitializeResponse,
         args: DebugProtocol.InitializeRequestArguments
     ): void {
-        logger.info('Initialize request received');
+        logger.info('Initialize request received', args);
 
         response.body = {
             supportsConfigurationDoneRequest: true,
@@ -87,7 +120,9 @@ export class RemoteGDBDebugSession extends DebugSession {
         };
 
         this.sendResponse(response);
+        logger.info('Sending InitializedEvent to signal VSCode can send breakpoints');
         this.sendEvent(new InitializedEvent());
+        logger.info('InitializedEvent sent');
     }
 
     /**
@@ -109,6 +144,10 @@ export class RemoteGDBDebugSession extends DebugSession {
         // Initialize path mapper
         this.pathMapper = new PathMapper(remoteArgs.sourceMap);
 
+        // Send response IMMEDIATELY so VSCode can send breakpoints
+        logger.info('Sending launch response immediately to allow breakpoint requests');
+        this.sendResponse(response);
+
         try {
             // Connect to SSH
             const sshDetails = this.configParser.getConnectionDetails(remoteArgs.sshHost, {
@@ -118,12 +157,17 @@ export class RemoteGDBDebugSession extends DebugSession {
                 privateKeyPath: remoteArgs.sshKeyFile
             });
 
+            logger.info('Connecting to SSH host');
             this.sshClient = await this.sshManager.connect(sshDetails, remoteArgs.timeout || 10000);
+            logger.info('SSH client connected');
 
-            // Start GDB
+            // Now start GDB
+            logger.info('Starting GDB after launch response sent');
             await this.startGDB(remoteArgs);
+            logger.info('GDB started successfully');
 
-            this.sendResponse(response);
+            this.isInitialized = true;
+            logger.info('Debug session initialized, ready for configuration done');
         } catch (error) {
             logger.error('Launch failed', error);
             this.sendErrorResponse(response, {
@@ -195,10 +239,18 @@ export class RemoteGDBDebugSession extends DebugSession {
 
         logger.info('Starting GDB', { command: gdbCommand });
 
-        this.gdbChannel = await this.sshManager.spawnProcess(this.sshClient, gdbCommand);
+        try {
+            this.gdbChannel = await this.sshManager.spawnProcess(this.sshClient, gdbCommand);
+            logger.info('GDB channel created successfully');
+        } catch (error) {
+            logger.error('Failed to spawn GDB process', error);
+            throw error;
+        }
 
         // Setup GDB output handlers
+        logger.info('Setting up GDB output handlers');
         this.gdbChannel.on('data', (data: Buffer) => {
+            logger.info('GDB stdout data event fired');
             this.handleGDBOutput(data.toString());
         });
 
@@ -212,32 +264,50 @@ export class RemoteGDBDebugSession extends DebugSession {
             this.sendEvent(new TerminatedEvent());
         });
 
+        logger.info('GDB output handlers registered');
+
         // Wait for GDB to be ready
         await this.waitForGDBPrompt();
 
         // Execute setup commands
         if (config.setupCommands && config.setupCommands.length > 0) {
             for (const cmd of config.setupCommands) {
-                await this.sendGDBCommand(cmd);
+                try {
+                    await this.sendGDBCommand(cmd);
+                } catch (error) {
+                    logger.warn('Setup command failed', { cmd, error });
+                }
             }
         }
 
-        // Set working directory if specified
+        // Set working directory if specified (use gdb-set cwd for MI)
         if (config.cwd && !config.coreDumpPath) {
-            await this.sendGDBCommand(`environment PWD ${config.cwd}`);
+            try {
+                await this.sendGDBCommand(`gdb-set cwd ${config.cwd}`);
+            } catch (error) {
+                logger.warn('Failed to set working directory', { cwd: config.cwd, error });
+            }
         }
 
-        // Set environment variables
+        // Set environment variables (use gdb-set environment for MI)
         if (config.env && !config.coreDumpPath) {
             for (const [key, value] of Object.entries(config.env)) {
-                await this.sendGDBCommand(`environment ${key}=${value}`);
+                try {
+                    await this.sendGDBCommand(`gdb-set environment ${key} ${value}`);
+                } catch (error) {
+                    logger.warn('Failed to set environment variable', { key, value, error });
+                }
             }
         }
 
         // Set arguments
         if (config.args && config.args.length > 0 && !config.coreDumpPath) {
-            const argsStr = config.args.join(' ');
-            await this.sendGDBCommand(`exec-arguments ${argsStr}`);
+            try {
+                const argsStr = config.args.join(' ');
+                await this.sendGDBCommand(`exec-arguments ${argsStr}`);
+            } catch (error) {
+                logger.warn('Failed to set arguments', { args: config.args, error });
+            }
         }
     }
 
@@ -254,9 +324,19 @@ export class RemoteGDBDebugSession extends DebugSession {
      * Wait for GDB prompt
      */
     private waitForGDBPrompt(): Promise<void> {
-        return new Promise((resolve) => {
+        logger.info('Waiting for GDB prompt...');
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                logger.error('Timeout waiting for GDB prompt', {
+                    gdbReady: this.gdbReady
+                });
+                reject(new Error('Timeout waiting for GDB prompt'));
+            }, 5000);
+
             const checkPrompt = () => {
-                if (this.outputBuffer.includes('(gdb)')) {
+                if (this.gdbReady) {
+                    clearTimeout(timeout);
+                    logger.info('GDB prompt received');
                     resolve();
                 } else {
                     setTimeout(checkPrompt, 100);
@@ -270,8 +350,15 @@ export class RemoteGDBDebugSession extends DebugSession {
      * Handle GDB output
      */
     private handleGDBOutput(data: string): void {
+        logger.info('GDB output received', { data, length: data.length });
         this.outputBuffer += data;
         logger.gdbResponse(data);
+
+        // Check for GDB prompt to mark as ready
+        if (data.includes('(gdb)')) {
+            logger.info('GDB prompt detected, marking as ready');
+            this.gdbReady = true;
+        }
 
         const lines = this.outputBuffer.split('\n');
         this.outputBuffer = lines.pop() || ''; // Keep incomplete line in buffer
@@ -291,6 +378,20 @@ export class RemoteGDBDebugSession extends DebugSession {
         switch (record.type) {
             case 'result':
                 // Result records are handled by command responses
+                if (record.token !== undefined) {
+                    const pending = this.pendingCommands.get(record.token);
+                    if (pending) {
+                        this.pendingCommands.delete(record.token);
+                        if (record.class === 'done' || record.class === 'running') {
+                            pending.resolve(record);
+                        } else if (record.class === 'error') {
+                            const msg = this.gdbMI.getStringValue(this.gdbMI.findResult(record.results, 'msg'));
+                            pending.reject(new Error(msg || 'GDB command failed'));
+                        } else {
+                            pending.resolve(record);
+                        }
+                    }
+                }
                 break;
 
             case 'exec':
@@ -326,6 +427,13 @@ export class RemoteGDBDebugSession extends DebugSession {
     private handleStopped(event: any): void {
         logger.info('Program stopped', event);
 
+        // Handle program exit
+        if (event.reason === 'exited-normally' || event.reason === 'exited') {
+            logger.info('Program exited, terminating debug session');
+            this.sendEvent(new TerminatedEvent());
+            return;
+        }
+
         let reason: 'breakpoint' | 'step' | 'pause' | 'exception' | 'entry' = 'pause';
         if (event.reason === 'breakpoint-hit') {
             reason = 'breakpoint';
@@ -341,14 +449,33 @@ export class RemoteGDBDebugSession extends DebugSession {
     /**
      * Send GDB command
      */
-    private async sendGDBCommand(command: string): Promise<void> {
+    private async sendGDBCommand(command: string): Promise<MIRecord> {
         if (!this.gdbChannel) {
             throw new Error('GDB channel not available');
         }
 
-        const cmd = this.gdbMI.command(command.split(' ')[0], command.split(' ').slice(1).join(' '));
-        logger.gdbCommand(cmd);
-        this.gdbChannel.stdin.write(cmd + '\n');
+        const token = this.gdbMI.getNextToken();
+        const parts = command.split(' ');
+        const cmd = parts[0];
+        const args = parts.slice(1).join(' ');
+        const fullCmd = args ? `${token}-${cmd} ${args}` : `${token}-${cmd}`;
+
+        logger.info('Sending GDB command', { command, formatted: fullCmd, token });
+        logger.gdbCommand(fullCmd);
+
+        return new Promise((resolve, reject) => {
+            this.pendingCommands.set(token, { resolve, reject });
+
+            // Set a timeout
+            setTimeout(() => {
+                if (this.pendingCommands.has(token)) {
+                    this.pendingCommands.delete(token);
+                    reject(new Error(`Command timeout: ${command}`));
+                }
+            }, 5000);
+
+            this.gdbChannel!.stdin.write(fullCmd + '\n');
+        });
     }
 
     /**
@@ -358,11 +485,66 @@ export class RemoteGDBDebugSession extends DebugSession {
         response: DebugProtocol.ConfigurationDoneResponse,
         args: DebugProtocol.ConfigurationDoneArguments
     ): Promise<void> {
-        logger.info('Configuration done');
+        logger.info('Configuration done request received');
+        logger.info('Initialization status:', {
+            isInitialized: this.isInitialized,
+            hasGdbChannel: !!this.gdbChannel,
+            hasSshClient: !!this.sshClient
+        });
+
+        // Wait for initialization to complete if not already done
+        if (!this.isInitialized) {
+            logger.warn('Configuration done called before initialization complete, waiting...');
+            // Wait up to 5 seconds for initialization
+            const maxWait = 5000;
+            const startTime = Date.now();
+            while (!this.isInitialized && (Date.now() - startTime) < maxWait) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            if (!this.isInitialized) {
+                const error = new Error('Initialization timeout: GDB session not ready');
+                logger.error('Initialization timeout', error);
+                this.sendErrorResponse(response, {
+                    id: 3,
+                    format: error.message
+                });
+                return;
+            }
+            logger.info('Initialization completed, continuing with configuration done');
+        }
 
         try {
+            // Apply pending breakpoints before running
+            if (this.pendingBreakpoints.size > 0) {
+                logger.info('Applying pending breakpoints', {
+                    count: this.pendingBreakpoints.size
+                });
+
+                for (const [path, bps] of this.pendingBreakpoints.entries()) {
+                    const remotePath = this.pathMapper?.toRemotePath(path) || path;
+                    for (const bp of bps) {
+                        try {
+                            logger.info('Applying pending breakpoint', {
+                                path: remotePath,
+                                line: bp.line
+                            });
+                            await this.sendGDBCommand(`break-insert ${remotePath}:${bp.line}`);
+                            logger.info('Pending breakpoint applied successfully');
+                        } catch (error) {
+                            logger.error('Failed to apply pending breakpoint', { path, line: bp.line, error });
+                        }
+                    }
+                }
+                this.pendingBreakpoints.clear();
+            }
+
             // Start execution if not a core dump and not attach mode
             if (this.configuration && !this.configuration.coreDumpPath && this.configuration.request === 'launch') {
+                logger.info('Starting program execution', {
+                    stopAtEntry: this.configuration.stopAtEntry,
+                    hasGdbChannel: !!this.gdbChannel
+                });
+
                 if (this.configuration.stopAtEntry) {
                     await this.sendGDBCommand('exec-run --start');
                 } else {
@@ -372,10 +554,16 @@ export class RemoteGDBDebugSession extends DebugSession {
 
             this.sendResponse(response);
         } catch (error) {
-            logger.error('Configuration done failed', error);
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const errorStack = error instanceof Error ? error.stack : undefined;
+            logger.error('Configuration done failed', {
+                message: errorMessage,
+                stack: errorStack,
+                error: error
+            });
             this.sendErrorResponse(response, {
                 id: 3,
-                format: `Failed to start program: ${error instanceof Error ? error.message : String(error)}`
+                format: `Failed to start program: ${errorMessage}`
             });
         }
     }
@@ -387,10 +575,47 @@ export class RemoteGDBDebugSession extends DebugSession {
         response: DebugProtocol.SetBreakpointsResponse,
         args: DebugProtocol.SetBreakpointsArguments
     ): Promise<void> {
+        logger.info('=== setBreakpointsRequest called ===');
+        logger.info('Breakpoint request details:', {
+            sourcePath: args.source.path,
+            sourceName: args.source.name,
+            sourceReference: args.source.sourceReference,
+            breakpointCount: args.breakpoints?.length || 0,
+            breakpoints: args.breakpoints?.map(bp => ({
+                line: bp.line,
+                column: bp.column,
+                condition: bp.condition,
+                hitCondition: bp.hitCondition,
+                logMessage: bp.logMessage
+            }))
+        });
+
         const path = args.source.path!;
         const remotePath = this.pathMapper?.toRemotePath(path) || path;
 
-        logger.info('Setting breakpoints', { path, remotePath, lines: args.breakpoints?.map(bp => bp.line) });
+        logger.info('Path mapping:', {
+            localPath: path,
+            remotePath: remotePath,
+            pathMapperExists: !!this.pathMapper
+        });
+
+        // If GDB isn't ready yet, queue the breakpoints
+        if (!this.gdbChannel) {
+            logger.info('GDB not ready yet, queueing breakpoints for later');
+            if (args.breakpoints) {
+                this.pendingBreakpoints.set(path, args.breakpoints);
+            }
+            // Return pending breakpoints as unverified
+            const breakpoints: DebugProtocol.Breakpoint[] = [];
+            if (args.breakpoints) {
+                for (const bp of args.breakpoints) {
+                    breakpoints.push(new Breakpoint(false, bp.line));
+                }
+            }
+            response.body = { breakpoints };
+            this.sendResponse(response);
+            return;
+        }
 
         // Clear existing breakpoints for this file
         const existingBps = this.breakpoints.get(path) || [];
@@ -407,9 +632,15 @@ export class RemoteGDBDebugSession extends DebugSession {
         if (args.breakpoints) {
             for (const sourceBp of args.breakpoints) {
                 try {
+                    logger.info('Setting breakpoint', {
+                        line: sourceBp.line,
+                        remotePath,
+                        command: `break-insert ${remotePath}:${sourceBp.line}`
+                    });
                     await this.sendGDBCommand(`break-insert ${remotePath}:${sourceBp.line}`);
                     // In a real implementation, we'd parse the response to get the GDB breakpoint ID
                     // For now, we'll assume it succeeded
+                    logger.info('Breakpoint set successfully', { line: sourceBp.line });
                     breakpoints.push(new Breakpoint(true, sourceBp.line));
                 } catch (error) {
                     logger.error('Failed to set breakpoint', { line: sourceBp.line, error });
@@ -441,15 +672,101 @@ export class RemoteGDBDebugSession extends DebugSession {
         args: DebugProtocol.StackTraceArguments
     ): Promise<void> {
         try {
-            await this.sendGDBCommand('stack-list-frames');
-            // In a real implementation, we'd parse the response
-            // For now, return empty stack
-            response.body = { stackFrames: [], totalFrames: 0 };
+            logger.info('Stack trace request', { threadId: args.threadId });
+
+            // Reuse pending stack trace request if one is in progress
+            if (!this.pendingStackTrace) {
+                this.pendingStackTrace = this.sendGDBCommand('stack-list-frames');
+                // Clear the pending request once it completes (success or failure)
+                this.pendingStackTrace.finally(() => {
+                    this.pendingStackTrace = null;
+                });
+            } else {
+                logger.info('Reusing pending stack trace request');
+            }
+
+            const record = await this.pendingStackTrace;
+            logger.info('Stack frames response received', {
+                record,
+                class: record.class,
+                hasResults: !!record.results,
+                resultsLength: record.results?.length
+            });
+
+            const stackFrames: DebugProtocol.StackFrame[] = [];
+
+            // Parse stack frames from the response
+            const stackValue = this.gdbMI.findResult(record.results, 'stack');
+            logger.info('Stack value found', { stackValue, type: typeof stackValue });
+
+            const stackList = this.gdbMI.getList(stackValue);
+            logger.info('Stack list parsed', {
+                hasStackList: !!stackList,
+                valuesLength: stackList?.values.length
+            });
+
+            if (stackList) {
+                for (const frameValue of stackList.values) {
+                    logger.info('Processing frame value', { frameValue });
+                    let frameTuple = this.gdbMI.getTuple(frameValue);
+                    logger.info('Frame tuple', { frameTuple });
+
+                    if (frameTuple) {
+                        // Check if this is a wrapper tuple with "frame" variable
+                        // GDB returns: frame={level="0",...} wrapped in an extra tuple
+                        const frameResult = this.gdbMI.findResult(frameTuple.results, 'frame');
+                        if (frameResult) {
+                            const innerTuple = this.gdbMI.getTuple(frameResult);
+                            if (innerTuple) {
+                                frameTuple = innerTuple;
+                                logger.info('Extracted inner frame tuple', { frameTuple });
+                            }
+                        }
+
+                        const frame = this.gdbMI.parseStackFrame(frameTuple);
+                        logger.info('Parsed stack frame', { frame });
+
+                        // Convert to VSCode StackFrame
+                        const source = frame.fullname || frame.file
+                            ? new Source(
+                                frame.file || 'unknown',
+                                this.pathMapper?.toLocalPath(frame.fullname || frame.file!) || frame.fullname || frame.file
+                            )
+                            : undefined;
+
+                        const stackFrame = new StackFrame(
+                            frame.level,
+                            frame.func,
+                            source,
+                            frame.line || 0,
+                            0
+                        );
+
+                        logger.info('Created VSCode stack frame', { stackFrame });
+                        stackFrames.push(stackFrame);
+                    }
+                }
+            } else {
+                logger.warn('No stack list found in response');
+            }
+
+            logger.info('Returning stack frames', { count: stackFrames.length });
+            response.body = {
+                stackFrames,
+                totalFrames: stackFrames.length
+            };
             this.sendResponse(response);
         } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const errorStack = error instanceof Error ? error.stack : undefined;
+            logger.error('Failed to get stack trace', {
+                message: errorMessage,
+                stack: errorStack,
+                error: error
+            });
             this.sendErrorResponse(response, {
                 id: 4,
-                format: `Failed to get stack trace: ${error instanceof Error ? error.message : String(error)}`
+                format: `Failed to get stack trace: ${errorMessage}`
             });
         }
     }
@@ -458,9 +775,10 @@ export class RemoteGDBDebugSession extends DebugSession {
      * Scopes request
      */
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
+        logger.info('Scopes request', { frameId: args.frameId });
+
         const scopes: Scope[] = [
-            new Scope('Local', this.variableHandles.create('local'), false),
-            new Scope('Global', this.variableHandles.create('global'), true)
+            new Scope('Local', this.variableHandles.create(`local_${args.frameId}`), false)
         ];
 
         response.body = { scopes };
@@ -474,9 +792,57 @@ export class RemoteGDBDebugSession extends DebugSession {
         response: DebugProtocol.VariablesResponse,
         args: DebugProtocol.VariablesArguments
     ): Promise<void> {
-        // In a real implementation, we'd fetch variables from GDB
-        response.body = { variables: [] };
-        this.sendResponse(response);
+        try {
+            logger.info('Variables request', { variablesReference: args.variablesReference });
+
+            const handle = this.variableHandles.get(args.variablesReference);
+            logger.info('Variable handle', { handle });
+
+            if (!handle || !handle.startsWith('local_')) {
+                response.body = { variables: [] };
+                this.sendResponse(response);
+                return;
+            }
+
+            // Get local variables using stack-list-variables
+            const record = await this.sendGDBCommand('stack-list-variables --simple-values');
+            logger.info('Variables response received', { record });
+
+            const variables: DebugProtocol.Variable[] = [];
+
+            // Parse variables from response
+            const variablesList = this.gdbMI.getList(this.gdbMI.findResult(record.results, 'variables'));
+            logger.info('Variables list', { variablesList });
+
+            if (variablesList) {
+                for (const varValue of variablesList.values) {
+                    const varTuple = this.gdbMI.getTuple(varValue);
+                    if (varTuple) {
+                        const name = this.gdbMI.getStringValue(this.gdbMI.findResult(varTuple.results, 'name'));
+                        const value = this.gdbMI.getStringValue(this.gdbMI.findResult(varTuple.results, 'value'));
+                        const type = this.gdbMI.getStringValue(this.gdbMI.findResult(varTuple.results, 'type'));
+
+                        if (name) {
+                            logger.info('Parsed variable', { name, value, type });
+                            variables.push({
+                                name: name,
+                                value: value || '<unknown>',
+                                type: type,
+                                variablesReference: 0
+                            });
+                        }
+                    }
+                }
+            }
+
+            logger.info('Returning variables', { count: variables.length, variables });
+            response.body = { variables };
+            this.sendResponse(response);
+        } catch (error) {
+            logger.error('Failed to get variables', error);
+            response.body = { variables: [] };
+            this.sendResponse(response);
+        }
     }
 
     /**

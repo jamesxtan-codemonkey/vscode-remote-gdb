@@ -60,7 +60,11 @@ export class SSHManager extends EventEmitter {
 
             client.on('error', (err) => {
                 clearTimeout(timer);
-                logger.error('SSH connection error', err);
+                logger.error('SSH connection error', {
+                    message: err.message,
+                    stack: err.stack,
+                    error: err
+                });
                 this.updateSessionState(sessionKey, SSHSessionState.Failed);
                 reject(err);
             });
@@ -80,12 +84,15 @@ export class SSHManager extends EventEmitter {
                 return;
             }
 
-            // Connect
+            // Connect with keepalive to prevent timeout during debugging
             client.connect({
                 host: details.hostname,
                 port: details.port,
                 username: details.username,
-                privateKey
+                privateKey,
+                keepaliveInterval: 1000, // Send keepalive every 1 second (aggressive to prevent timeout)
+                keepaliveCountMax: 10,   // Allow 10 missed keepalives before disconnect
+                readyTimeout: 30000      // Longer ready timeout
             });
         });
     }
@@ -123,12 +130,15 @@ export class SSHManager extends EventEmitter {
      * Spawn a process (like GDB) and return the channel
      */
     async spawnProcess(client: Client, command: string): Promise<ClientChannel> {
+        logger.info('Spawning remote process', { command });
         return new Promise((resolve, reject) => {
             client.exec(command, (err, stream) => {
                 if (err) {
+                    logger.error('Failed to exec command', { command, error: err });
                     reject(err);
                     return;
                 }
+                logger.info('Remote process spawned successfully');
                 resolve(stream);
             });
         });

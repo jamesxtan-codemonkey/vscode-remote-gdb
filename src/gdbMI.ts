@@ -237,9 +237,29 @@ export class GDBMI {
                     break;
                 }
 
-                const { value, endIndex } = this.parseValue(str, i);
-                i = endIndex;
-                values.push(value);
+                const prevIndex = i;
+
+                // Check if this is a named value (like "frame={...}")
+                const namedMatch = /^([a-zA-Z_][a-zA-Z0-9_-]*)=/.exec(str.substring(i));
+                if (namedMatch) {
+                    // This is a result, not just a value - parse it as a tuple
+                    const variable = namedMatch[1];
+                    i += namedMatch[0].length;
+                    const { value, endIndex } = this.parseValue(str, i);
+                    i = endIndex;
+                    // Wrap in tuple format
+                    values.push({ type: 'tuple', results: [{ variable, value }] });
+                } else {
+                    const { value, endIndex } = this.parseValue(str, i);
+                    i = endIndex;
+                    values.push(value);
+                }
+
+                // Prevent infinite loop
+                if (i === prevIndex) {
+                    logger.error('Parser stuck at same position', { position: i, char: str[i], context: str.substring(i, i + 20) });
+                    break;
+                }
             }
 
             i++; // Skip closing bracket

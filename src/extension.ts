@@ -85,6 +85,8 @@ class RemoteGDBConfigurationProvider implements vscode.DebugConfigurationProvide
         config: DebugConfiguration,
         token?: CancellationToken
     ): ProviderResult<DebugConfiguration> {
+        logger.info('Resolving debug configuration:', config);
+
         // If launch.json is missing or empty
         if (!config.type && !config.request && !config.name) {
             const editor = vscode.window.activeTextEditor;
@@ -101,12 +103,14 @@ class RemoteGDBConfigurationProvider implements vscode.DebugConfigurationProvide
         }
 
         if (!config.sshHost) {
+            logger.error('Cannot find SSH host to debug. Config:', config);
             return vscode.window.showInformationMessage('Cannot find SSH host to debug').then(_ => {
                 return undefined;
             });
         }
 
         if (!config.program) {
+            logger.error('Cannot find a program to debug. Config:', config);
             return vscode.window.showInformationMessage('Cannot find a program to debug').then(_ => {
                 return undefined;
             });
