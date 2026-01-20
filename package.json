@@ -1,0 +1,286 @@
+{
+  "name": "remote-gdb",
+  "displayName": "Remote GDB Debugger",
+  "description": "Debug C/C++ applications on remote Linux machines via SSH using GDB",
+  "version": "0.1.0",
+  "publisher": "jamestan",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onDebugResolve:remote-gdb",
+    "onCommand:remote-gdb.createConfig"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "remote-gdb.createConfig",
+        "title": "Remote GDB: Create Debug Configuration"
+      },
+      {
+        "command": "remote-gdb.pickRemoteProcess",
+        "title": "Remote GDB: Pick Remote Process"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "remote-gdb",
+        "label": "Remote GDB",
+        "languages": [
+          "c",
+          "cpp"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "sshHost",
+              "program"
+            ],
+            "properties": {
+              "sshHost": {
+                "type": "string",
+                "description": "SSH host from ~/.ssh/config",
+                "default": ""
+              },
+              "sshHostname": {
+                "type": "string",
+                "description": "SSH hostname (overrides .ssh/config)"
+              },
+              "sshPort": {
+                "type": "number",
+                "description": "SSH port (default: 22)"
+              },
+              "sshUsername": {
+                "type": "string",
+                "description": "SSH username (overrides .ssh/config)"
+              },
+              "sshKeyFile": {
+                "type": "string",
+                "description": "SSH key file path (overrides .ssh/config)"
+              },
+              "program": {
+                "type": "string",
+                "description": "Absolute path to remote executable"
+              },
+              "args": {
+                "type": "array",
+                "description": "Command line arguments",
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Working directory on remote machine"
+              },
+              "env": {
+                "type": "object",
+                "description": "Environment variables",
+                "default": {}
+              },
+              "coreDumpPath": {
+                "type": "string",
+                "description": "Path to core dump file (for core dump analysis)"
+              },
+              "gdbPath": {
+                "type": "string",
+                "description": "Path to GDB on remote machine",
+                "default": "/usr/bin/gdb"
+              },
+              "stopAtEntry": {
+                "type": "boolean",
+                "description": "Stop at entry point (main)",
+                "default": false
+              },
+              "setupCommands": {
+                "type": "array",
+                "description": "GDB initialization commands",
+                "default": []
+              },
+              "sourceMap": {
+                "type": "object",
+                "description": "Map local paths to remote paths",
+                "default": {}
+              },
+              "verbose": {
+                "type": "boolean",
+                "description": "Enable verbose logging",
+                "default": false
+              },
+              "timeout": {
+                "type": "number",
+                "description": "SSH connection timeout in milliseconds",
+                "default": 10000
+              }
+            }
+          },
+          "attach": {
+            "required": [
+              "sshHost",
+              "program"
+            ],
+            "properties": {
+              "sshHost": {
+                "type": "string",
+                "description": "SSH host from ~/.ssh/config"
+              },
+              "sshHostname": {
+                "type": "string",
+                "description": "SSH hostname (overrides .ssh/config)"
+              },
+              "sshPort": {
+                "type": "number",
+                "description": "SSH port (default: 22)"
+              },
+              "sshUsername": {
+                "type": "string",
+                "description": "SSH username (overrides .ssh/config)"
+              },
+              "sshKeyFile": {
+                "type": "string",
+                "description": "SSH key file path (overrides .ssh/config)"
+              },
+              "program": {
+                "type": "string",
+                "description": "Absolute path to remote executable"
+              },
+              "processId": {
+                "type": [
+                  "string",
+                  "number"
+                ],
+                "description": "Process ID to attach to",
+                "default": "${command:remote-gdb.pickRemoteProcess}"
+              },
+              "gdbPath": {
+                "type": "string",
+                "description": "Path to GDB on remote machine",
+                "default": "/usr/bin/gdb"
+              },
+              "setupCommands": {
+                "type": "array",
+                "description": "GDB initialization commands",
+                "default": []
+              },
+              "sourceMap": {
+                "type": "object",
+                "description": "Map local paths to remote paths",
+                "default": {}
+              },
+              "verbose": {
+                "type": "boolean",
+                "description": "Enable verbose logging",
+                "default": false
+              },
+              "timeout": {
+                "type": "number",
+                "description": "SSH connection timeout in milliseconds",
+                "default": 10000
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "remote-gdb",
+            "request": "launch",
+            "name": "Remote GDB Launch",
+            "sshHost": "your-remote-host",
+            "program": "/path/to/remote/executable",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "sourceMap": {
+              "${workspaceFolder}": "/remote/source/path"
+            }
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Remote GDB: Launch",
+            "description": "Launch a program on remote machine",
+            "body": {
+              "type": "remote-gdb",
+              "request": "launch",
+              "name": "Remote GDB Launch",
+              "sshHost": "${1:your-remote-host}",
+              "program": "${2:/path/to/remote/executable}",
+              "args": [],
+              "cwd": "^\"\\${workspaceFolder}\"",
+              "sourceMap": {
+                "^\"\\${workspaceFolder}\"": "${3:/remote/source/path}"
+              }
+            }
+          },
+          {
+            "label": "Remote GDB: Attach",
+            "description": "Attach to a running process on remote machine",
+            "body": {
+              "type": "remote-gdb",
+              "request": "attach",
+              "name": "Remote GDB Attach",
+              "sshHost": "${1:your-remote-host}",
+              "program": "${2:/path/to/remote/executable}",
+              "processId": "^\"\\${command:remote-gdb.pickRemoteProcess}\"",
+              "sourceMap": {
+                "^\"\\${workspaceFolder}\"": "${3:/remote/source/path}"
+              }
+            }
+          },
+          {
+            "label": "Remote GDB: Core Dump",
+            "description": "Analyze a core dump on remote machine",
+            "body": {
+              "type": "remote-gdb",
+              "request": "launch",
+              "name": "Remote GDB Core Dump",
+              "sshHost": "${1:your-remote-host}",
+              "program": "${2:/path/to/remote/executable}",
+              "coreDumpPath": "${3:/path/to/core/dump}",
+              "sourceMap": {
+                "^\"\\${workspaceFolder}\"": "${4:/remote/source/path}"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Remote GDB",
+      "properties": {
+        "remote-gdb.logging.verbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose logging for troubleshooting"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "clean": "rm -rf dist",
+    "pretest": "npm run compile",
+    "test": "node ./dist/test/runTest.js",
+    "test:unit": "npm run compile && mocha ./dist/test/suite/**/*.test.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.10.0",
+    "@types/ssh2": "^1.15.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^2.22.0",
+    "mocha": "^11.7.5",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@vscode/debugadapter": "^1.65.0",
+    "@vscode/debugprotocol": "^1.65.0",
+    "ssh-config": "^4.4.2",
+    "ssh2": "^1.15.0"
+  }
+}
