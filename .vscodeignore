@@ -9,3 +9,8 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 node_modules/**
+!node_modules/ssh2/**
+!node_modules/asn1/**
+!node_modules/bcrypt-pbkdf/**
+!node_modules/cpu-features/**
+!node_modules/nan/**

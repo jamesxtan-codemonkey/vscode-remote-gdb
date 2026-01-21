@@ -13,7 +13,7 @@ async function main() {
         sourcesContent: false,
         platform: 'node',
         outfile: 'dist/extension.js',
-        external: ['vscode'],
+        external: ['vscode', 'ssh2'],
         logLevel: 'info',
         plugins: [
             /* add plugins here */
