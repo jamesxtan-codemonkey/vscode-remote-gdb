@@ -13,7 +13,7 @@ import {
 } from '@vscode/debugadapter';
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { Client, ClientChannel } from 'ssh2';
-import { RemoteGDBConfiguration } from './types/config';
+import { RemoteGDBConfiguration, SSHConnectionDetails } from './types/config';
 import { SSHManager } from './sshManager';
 import { ConfigParser } from './configParser';
 import { GDBMI } from './gdbMI';
@@ -32,6 +32,7 @@ export class RemoteGDBDebugSession extends DebugSession {
     private sshClient: Client | null = null;
     private gdbChannel: ClientChannel | null = null;
     private configuration: RemoteGDBConfiguration | null = null;
+    private sshDetails: SSHConnectionDetails | null = null;
     private variableHandles = new Handles<string>();
     private gdbBreakpoints: Map<string, Map<number, number>> = new Map(); // File -> (VSCode line -> GDB breakpoint ID)
     private currentThreadId = 1;
@@ -145,7 +146,7 @@ export class RemoteGDBDebugSession extends DebugSession {
 
         try {
             // Connect to SSH
-            const sshDetails = this.configParser.getConnectionDetails(remoteArgs.sshHost, {
+            this.sshDetails = this.configParser.getConnectionDetails(remoteArgs.sshHost, {
                 hostname: remoteArgs.sshHostname,
                 port: remoteArgs.sshPort,
                 username: remoteArgs.sshUsername,
@@ -153,7 +154,7 @@ export class RemoteGDBDebugSession extends DebugSession {
             });
 
             logger.info('Connecting to SSH host');
-            this.sshClient = await this.sshManager.connect(sshDetails, remoteArgs.timeout || 10000);
+            this.sshClient = await this.sshManager.connect(this.sshDetails, remoteArgs.timeout || 10000);
             logger.info('SSH client connected');
 
             // Now start GDB
@@ -167,6 +168,7 @@ export class RemoteGDBDebugSession extends DebugSession {
             this.sendResponse(response);
         } catch (error) {
             logger.error('Launch failed', error);
+            this.cleanupSession();
             this.sendErrorResponse(response, {
                 id: 1,
                 format: `Failed to launch: ${error instanceof Error ? error.message : String(error)}`
@@ -219,14 +221,14 @@ export class RemoteGDBDebugSession extends DebugSession {
 
         try {
             // Connect to SSH
-            const sshDetails = this.configParser.getConnectionDetails(remoteArgs.sshHost, {
+            this.sshDetails = this.configParser.getConnectionDetails(remoteArgs.sshHost, {
                 hostname: remoteArgs.sshHostname,
                 port: remoteArgs.sshPort,
                 username: remoteArgs.sshUsername,
                 privateKeyPath: remoteArgs.sshKeyFile
             });
 
-            this.sshClient = await this.sshManager.connect(sshDetails, remoteArgs.timeout || 10000);
+            this.sshClient = await this.sshManager.connect(this.sshDetails, remoteArgs.timeout || 10000);
 
             // Start GDB and attach
             await this.startGDB(remoteArgs);
@@ -236,6 +238,7 @@ export class RemoteGDBDebugSession extends DebugSession {
             this.sendResponse(response);
         } catch (error) {
             logger.error('Attach failed', error);
+            this.cleanupSession();
             this.sendErrorResponse(response, {
                 id: 2,
                 format: `Failed to attach: ${error instanceof Error ? error.message : String(error)}`
@@ -283,6 +286,7 @@ export class RemoteGDBDebugSession extends DebugSession {
 
         this.gdbChannel.on('close', () => {
             logger.info('GDB process closed');
+            this.cleanupSession();
             this.sendEvent(new TerminatedEvent());
         });
 
@@ -1186,11 +1190,7 @@ export class RemoteGDBDebugSession extends DebugSession {
                 this.gdbChannel = null;
             }
 
-            // Disconnect SSH
-            if (this.configuration) {
-                const sshDetails = this.configParser.getConnectionDetails(this.configuration.sshHost);
-                this.sshManager.disconnect(sshDetails);
-            }
+            this.cleanupSession();
 
             this.sendResponse(response);
         } catch (error) {
@@ -1207,5 +1207,14 @@ export class RemoteGDBDebugSession extends DebugSession {
         _args: DebugProtocol.TerminateArguments
     ): void {
         this.disconnectRequest(response, {});
+    }
+
+    private cleanupSession(): void {
+        this.gdbChannel = null;
+        if (this.sshDetails) {
+            this.sshManager.disconnect(this.sshDetails);
+            this.sshDetails = null;
+        }
+        this.sshClient = null;
     }
 }

@@ -292,8 +292,9 @@ async function pickRemoteProcess(): Promise<string | undefined> {
     const configParser = new ConfigParser();
     const sshManager = new SSHManager();
 
+    let sshDetails: ReturnType<ConfigParser['getConnectionDetails']> | null = null;
     try {
-        const sshDetails = configParser.getConnectionDetails(config.sshHost, {
+        sshDetails = configParser.getConnectionDetails(config.sshHost, {
             hostname: config.sshHostname,
             port: config.sshPort,
             username: config.sshUsername,
@@ -324,9 +325,6 @@ async function pickRemoteProcess(): Promise<string | undefined> {
             }
         );
 
-        // Disconnect SSH after selecting
-        sshManager.disconnect(sshDetails);
-
         if (selected) {
             const pid = selected.split(':')[0].trim();
             return pid;
@@ -336,5 +334,9 @@ async function pickRemoteProcess(): Promise<string | undefined> {
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to list processes: ${error}`);
         return undefined;
+    } finally {
+        if (sshDetails) {
+            sshManager.disconnect(sshDetails);
+        }
     }
 }
