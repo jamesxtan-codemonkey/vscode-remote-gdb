@@ -173,6 +173,13 @@ If you need to override SSH settings from `~/.ssh/config`:
 - Hover over variables in code to see values
 - Add watch expressions in the Watch panel
 
+**Tip: Show Variable Types**
+
+By default, VSCode hides variable types in the Variables and Watch panels. To enable it:
+1. Open VSCode Settings (`Cmd+,`)
+2. Search for `debug.showVariableTypes`
+3. Check the box to enable it
+
 ### Call Stack
 - View full call stack with function names and line numbers
 - Click stack frames to navigate

@@ -255,14 +255,43 @@ async function createDebugConfiguration(): Promise<void> {
  * Pick remote process to attach to
  */
 async function pickRemoteProcess(): Promise<string | undefined> {
-    // Get current debug configuration
-    const session = vscode.debug.activeDebugSession;
-    if (!session || session.type !== 'remote-gdb') {
-        vscode.window.showErrorMessage('No active Remote GDB debug session');
+    // Get the SSH host from the launch.json configuration
+    // We need to read this before the debug session starts
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+        vscode.window.showErrorMessage('No workspace folder open');
         return undefined;
     }
 
-    const config = session.configuration;
+    // Try to get SSH host from launch.json
+    const launchConfig = vscode.workspace.getConfiguration('launch', workspaceFolder.uri);
+    const configurations = launchConfig.get<any[]>('configurations', []);
+
+    // Find a remote-gdb attach configuration
+    const attachConfigs = configurations.filter(
+        (c: any) => c.type === 'remote-gdb' && c.request === 'attach'
+    );
+
+    if (attachConfigs.length === 0) {
+        vscode.window.showErrorMessage('No Remote GDB attach configuration found in launch.json');
+        return undefined;
+    }
+
+    // If multiple attach configs, let user choose
+    let config: any;
+    if (attachConfigs.length === 1) {
+        config = attachConfigs[0];
+    } else {
+        const selected = await vscode.window.showQuickPick(
+            attachConfigs.map((c: any) => ({ label: c.name, config: c })),
+            { placeHolder: 'Select configuration to use for SSH connection' }
+        );
+        if (!selected) {
+            return undefined;
+        }
+        config = selected.config;
+    }
+
     const configParser = new ConfigParser();
     const sshManager = new SSHManager();
 
@@ -298,8 +327,11 @@ async function pickRemoteProcess(): Promise<string | undefined> {
             }
         );
 
+        // Disconnect SSH after selecting
+        sshManager.disconnect(sshDetails);
+
         if (selected) {
-            const pid = selected.split(':')[0];
+            const pid = selected.split(':')[0].trim();
             return pid;
         }
 

@@ -36,6 +36,7 @@ export class RemoteGDBDebugSession extends DebugSession {
     private breakpoints: Map<string, DebugProtocol.Breakpoint[]> = new Map();
     private gdbBreakpoints: Map<string, Map<number, number>> = new Map(); // File -> (VSCode line -> GDB breakpoint ID)
     private currentThreadId = 1;
+    private currentFrameId = 0;
     private outputBuffer = '';
     private isRunning = false;
     private isInitialized = false;
@@ -191,6 +192,30 @@ export class RemoteGDBDebugSession extends DebugSession {
             logger.setVerbose(true);
         }
 
+        // Validate process ID before starting
+        const processId = remoteArgs.processId;
+        if (!processId ||
+            processId === '${command:remote-gdb.pickRemoteProcess}' ||
+            (typeof processId === 'string' && processId.startsWith('${command:'))) {
+            logger.error('No process selected for attach');
+            this.sendErrorResponse(response, {
+                id: 2,
+                format: 'No process selected. Please select a process to attach to.'
+            });
+            return;
+        }
+
+        // Validate that processId is a valid number
+        const pid = typeof processId === 'string' ? parseInt(processId, 10) : processId;
+        if (isNaN(pid) || pid <= 0) {
+            logger.error('Invalid process ID', { processId });
+            this.sendErrorResponse(response, {
+                id: 2,
+                format: `Invalid process ID: ${processId}. Please provide a valid process ID.`
+            });
+            return;
+        }
+
         // Initialize path mapper
         this.pathMapper = new PathMapper(remoteArgs.sourceMap);
 
@@ -207,7 +232,7 @@ export class RemoteGDBDebugSession extends DebugSession {
 
             // Start GDB and attach
             await this.startGDB(remoteArgs);
-            await this.attachToProcess(remoteArgs.processId!);
+            await this.attachToProcess(pid);
 
             this.isInitialized = true;
             this.sendResponse(response);
@@ -268,11 +293,14 @@ export class RemoteGDBDebugSession extends DebugSession {
         // Wait for GDB to be ready
         await this.waitForGDBPrompt();
 
-        // Execute setup commands
+        // Execute setup commands using the CLI interpreter
+        // Setup commands are typically GDB CLI commands (like "set print pretty on"),
+        // not MI commands, so we need to use interpreter-exec to run them
         if (config.setupCommands && config.setupCommands.length > 0) {
             for (const cmd of config.setupCommands) {
                 try {
-                    await this.sendGDBCommand(cmd);
+                    // Use interpreter-exec console to run CLI commands
+                    await this.sendGDBCommand(`interpreter-exec console "${cmd}"`);
                 } catch (error) {
                     logger.warn('Setup command failed', { cmd, error });
                 }
@@ -589,17 +617,34 @@ export class RemoteGDBDebugSession extends DebugSession {
                 this.pendingBreakpoints.clear();
             }
 
-            // Start execution if not a core dump and not attach mode
-            if (this.configuration && !this.configuration.coreDumpPath && this.configuration.request === 'launch') {
-                logger.info('Starting program execution', {
-                    stopAtEntry: this.configuration.stopAtEntry,
-                    hasGdbChannel: !!this.gdbChannel
-                });
+            // Handle different debug modes
+            if (this.configuration) {
+                if (this.configuration.coreDumpPath) {
+                    // Core dump analysis - program is already "stopped", notify VSCode
+                    logger.info('Core dump analysis mode - sending stopped event');
+                    this.sendResponse(response);
+                    // Send stopped event so VSCode shows the call stack and variables
+                    this.sendEvent(new StoppedEvent('exception', this.currentThreadId));
+                    return;
+                } else if (this.configuration.request === 'attach') {
+                    // Attach mode - program is already attached and stopped
+                    logger.info('Attach mode - sending stopped event');
+                    this.sendResponse(response);
+                    // Send stopped event so VSCode shows the call stack and variables
+                    this.sendEvent(new StoppedEvent('entry', this.currentThreadId));
+                    return;
+                } else if (this.configuration.request === 'launch') {
+                    // Launch mode - start execution
+                    logger.info('Starting program execution', {
+                        stopAtEntry: this.configuration.stopAtEntry,
+                        hasGdbChannel: !!this.gdbChannel
+                    });
 
-                if (this.configuration.stopAtEntry) {
-                    await this.sendGDBCommand('exec-run --start');
-                } else {
-                    await this.sendGDBCommand('exec-run');
+                    if (this.configuration.stopAtEntry) {
+                        await this.sendGDBCommand('exec-run --start');
+                    } else {
+                        await this.sendGDBCommand('exec-run');
+                    }
                 }
             }
 
@@ -917,6 +962,9 @@ export class RemoteGDBDebugSession extends DebugSession {
     protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
         logger.info('Scopes request', { frameId: args.frameId });
 
+        // Store the current frame ID for evaluate requests
+        this.currentFrameId = args.frameId;
+
         const scopes: Scope[] = [
             new Scope('Local', this.variableHandles.create(`local_${args.frameId}`), false)
         ];
@@ -943,6 +991,13 @@ export class RemoteGDBDebugSession extends DebugSession {
                 this.sendResponse(response);
                 return;
             }
+
+            // Extract frame ID from handle (format: "local_<frameId>")
+            const frameId = parseInt(handle.substring(6), 10);
+            logger.info('Selecting frame for variables', { frameId });
+
+            // Select the correct frame before querying variables
+            await this.sendGDBCommand(`stack-select-frame ${frameId}`);
 
             // Get local variables using stack-list-variables
             const record = await this.sendGDBCommand('stack-list-variables --simple-values');
@@ -1085,6 +1140,11 @@ export class RemoteGDBDebugSession extends DebugSession {
         args: DebugProtocol.EvaluateArguments
     ): Promise<void> {
         try {
+            // Select the correct frame context for evaluation
+            // Use frameId from args if provided, otherwise use the last selected frame
+            const frameId = args.frameId !== undefined ? args.frameId : this.currentFrameId;
+            await this.sendGDBCommand(`stack-select-frame ${frameId}`);
+
             const record = await this.sendGDBCommand(`data-evaluate-expression ${args.expression}`);
             const value = this.gdbMI.getStringValue(this.gdbMI.findResult(record.results, 'value'));
 
