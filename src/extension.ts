@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { WorkspaceFolder, DebugConfiguration, ProviderResult, CancellationToken } from 'vscode';
 import { RemoteGDBDebugSession } from './debugAdapter';
 import { logger } from './utils/logger';
 import { ConfigParser } from './configParser';
@@ -81,10 +80,9 @@ class RemoteGDBConfigurationProvider implements vscode.DebugConfigurationProvide
      * Resolve debug configuration before launch
      */
     resolveDebugConfiguration(
-        folder: WorkspaceFolder | undefined,
-        config: DebugConfiguration,
-        token?: CancellationToken
-    ): ProviderResult<DebugConfiguration> {
+        _folder: vscode.WorkspaceFolder | undefined,
+        config: vscode.DebugConfiguration
+    ): vscode.ProviderResult<vscode.DebugConfiguration> {
         logger.info('Resolving debug configuration:', config);
 
         // If launch.json is missing or empty
@@ -125,9 +123,8 @@ class RemoteGDBConfigurationProvider implements vscode.DebugConfigurationProvide
  */
 class RemoteGDBDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {
     createDebugAdapterDescriptor(
-        session: vscode.DebugSession,
-        executable: vscode.DebugAdapterExecutable | undefined
-    ): ProviderResult<vscode.DebugAdapterDescriptor> {
+        _session: vscode.DebugSession
+    ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
         // Use inline debug adapter
         return new vscode.DebugAdapterInlineImplementation(new RemoteGDBDebugSession());
     }

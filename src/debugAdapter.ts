@@ -33,12 +33,10 @@ export class RemoteGDBDebugSession extends DebugSession {
     private gdbChannel: ClientChannel | null = null;
     private configuration: RemoteGDBConfiguration | null = null;
     private variableHandles = new Handles<string>();
-    private breakpoints: Map<string, DebugProtocol.Breakpoint[]> = new Map();
     private gdbBreakpoints: Map<string, Map<number, number>> = new Map(); // File -> (VSCode line -> GDB breakpoint ID)
     private currentThreadId = 1;
     private currentFrameId = 0;
     private outputBuffer = '';
-    private isRunning = false;
     private isInitialized = false;
     private gdbReady = false;
     private pendingBreakpoints: Map<string, DebugProtocol.SourceBreakpoint[]> = new Map();
@@ -423,11 +421,9 @@ export class RemoteGDBDebugSession extends DebugSession {
 
             case 'exec':
                 if (record.class === 'stopped') {
-                    this.isRunning = false;
                     const stoppedEvent = this.gdbMI.parseStoppedEvent(record.results || []);
                     this.handleStopped(stoppedEvent);
                 } else if (record.class === 'running') {
-                    this.isRunning = true;
                 }
                 break;
 
@@ -558,7 +554,7 @@ export class RemoteGDBDebugSession extends DebugSession {
      */
     protected async configurationDoneRequest(
         response: DebugProtocol.ConfigurationDoneResponse,
-        args: DebugProtocol.ConfigurationDoneArguments
+        _args: DebugProtocol.ConfigurationDoneArguments
     ): Promise<void> {
         logger.info('Configuration done request received');
         logger.info('Initialization status:', {
@@ -755,7 +751,6 @@ export class RemoteGDBDebugSession extends DebugSession {
             }
         }
 
-        this.breakpoints.set(path, breakpoints);
         response.body = { breakpoints };
         this.sendResponse(response);
     }
@@ -1045,11 +1040,10 @@ export class RemoteGDBDebugSession extends DebugSession {
      */
     protected async continueRequest(
         response: DebugProtocol.ContinueResponse,
-        args: DebugProtocol.ContinueArguments
+        _args: DebugProtocol.ContinueArguments
     ): Promise<void> {
         try {
             await this.sendGDBCommand('exec-continue');
-            this.isRunning = true;
             response.body = { allThreadsContinued: true };
             this.sendResponse(response);
         } catch (error) {
@@ -1065,7 +1059,7 @@ export class RemoteGDBDebugSession extends DebugSession {
      */
     protected async nextRequest(
         response: DebugProtocol.NextResponse,
-        args: DebugProtocol.NextArguments
+        _args: DebugProtocol.NextArguments
     ): Promise<void> {
         try {
             await this.sendGDBCommand('exec-next');
@@ -1083,7 +1077,7 @@ export class RemoteGDBDebugSession extends DebugSession {
      */
     protected async stepInRequest(
         response: DebugProtocol.StepInResponse,
-        args: DebugProtocol.StepInArguments
+        _args: DebugProtocol.StepInArguments
     ): Promise<void> {
         try {
             await this.sendGDBCommand('exec-step');
@@ -1101,7 +1095,7 @@ export class RemoteGDBDebugSession extends DebugSession {
      */
     protected async stepOutRequest(
         response: DebugProtocol.StepOutResponse,
-        args: DebugProtocol.StepOutArguments
+        _args: DebugProtocol.StepOutArguments
     ): Promise<void> {
         try {
             await this.sendGDBCommand('exec-finish');
@@ -1119,7 +1113,7 @@ export class RemoteGDBDebugSession extends DebugSession {
      */
     protected async pauseRequest(
         response: DebugProtocol.PauseResponse,
-        args: DebugProtocol.PauseArguments
+        _args: DebugProtocol.PauseArguments
     ): Promise<void> {
         try {
             await this.sendGDBCommand('exec-interrupt');
@@ -1180,7 +1174,7 @@ export class RemoteGDBDebugSession extends DebugSession {
      */
     protected async disconnectRequest(
         response: DebugProtocol.DisconnectResponse,
-        args: DebugProtocol.DisconnectArguments
+        _args: DebugProtocol.DisconnectArguments
     ): Promise<void> {
         logger.info('Disconnect request received');
 
@@ -1210,7 +1204,7 @@ export class RemoteGDBDebugSession extends DebugSession {
      */
     protected terminateRequest(
         response: DebugProtocol.TerminateResponse,
-        args: DebugProtocol.TerminateArguments
+        _args: DebugProtocol.TerminateArguments
     ): void {
         this.disconnectRequest(response, {});
     }

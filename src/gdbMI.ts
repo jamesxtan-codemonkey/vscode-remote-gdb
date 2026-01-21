@@ -5,9 +5,7 @@ import {
     MIValue,
     MITuple,
     MIList,
-    GDBBreakpoint,
     GDBStackFrame,
-    GDBVariable,
     GDBStoppedEvent,
     StopReason
 } from './types/gdb';

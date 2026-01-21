@@ -69,15 +69,6 @@ export class PathMapper {
             }
         }
 
-        // Fallback: try basename matching
-        // If we can't find a mapping, look for a file with the same basename
-        const basename = path.basename(remotePath);
-        for (const [remote, local] of this.remoteToLocal.entries()) {
-            const localWithBasename = path.join(local, basename);
-            // This is a heuristic - we'd need to verify file existence
-            // For now, just return the remote path if no mapping found
-        }
-
         // No mapping found, return as-is (will likely fail)
         return remotePath;
     }

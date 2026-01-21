@@ -259,9 +259,11 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run bundle:prod",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "bundle": "node esbuild.js",
+    "bundle:prod": "node esbuild.js --production",
     "clean": "rm -rf dist",
     "pretest": "npm run compile",
     "test": "node ./dist/test/runTest.js",
