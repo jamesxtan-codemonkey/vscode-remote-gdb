@@ -221,9 +221,12 @@ async function createDebugConfiguration(): Promise<void> {
         return;
     }
 
+    const vscodeDirUri = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode');
     const launchJsonUri = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'launch.json');
 
     try {
+        await vscode.workspace.fs.createDirectory(vscodeDirUri);
+
         let launchJson: any = { version: '0.2.0', configurations: [] };
 
         try {

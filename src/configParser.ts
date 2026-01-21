@@ -79,7 +79,7 @@ export class ConfigParser {
                 username = overrides.username;
             }
             if (overrides.privateKeyPath) {
-                privateKeyPath = overrides.privateKeyPath;
+                privateKeyPath = this.expandPath(overrides.privateKeyPath);
             }
         }
 

@@ -2,7 +2,7 @@
   "name": "remote-gdb",
   "displayName": "Remote GDB Debugger",
   "description": "Debug C/C++ applications on remote Linux machines via SSH using GDB",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "jamestan",
   "engines": {
     "vscode": "^1.85.0"
