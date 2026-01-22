@@ -81,6 +81,28 @@ You can create a debug configuration in two ways:
 3. Select **Remote GDB** from the debugger dropdown
 4. Your application will start on the remote machine and stop at breakpoints
 
+## Build and Package
+
+Install dependencies:
+```bash
+npm install
+```
+
+Build the extension bundle:
+```bash
+npm run bundle
+```
+
+Create a production bundle:
+```bash
+npm run bundle:prod
+```
+
+Package a VSIX for distribution (outputs `remote-gdb-<version>.vsix` in the repo root):
+```bash
+npm run package
+```
+
 ## Configuration Options
 
 ### Launch Mode
